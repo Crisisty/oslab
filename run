@@ -1,0 +1,39 @@
+#!/bin/sh
+export OSLAB_PATH=$(dirname `which $0`)
+export version=$1
+set -o errexit
+
+if [ $version == "0.11" ]; then 
+	srcpath="$OSLAB_PATH/linux\-0\.11"
+elif [ $version == "0.12" ]; then
+	srcpath="$OSLAB_PATH/linux\-0\.12"
+elif [ $version == "0.01" ]; then
+	srcpath="$OSLAB_PATH/linux\-0\.01"
+else
+	echo version not exist
+	exit
+fi
+if [ ! -e "$srcpath" ]; then
+	echo linux-$version make and move image and make clean
+	sudo make -C $srcpath
+	echo make complete !
+	sudo mv $srcpath/Image $OSLAB_PATH/image/Image
+	echo mv complete !
+	sudo make clean -C $srcpath
+	echo make clean complete !
+	if [ "$?" != "0" ]; then
+		exit
+	fi
+fi
+
+if [ ! -e "$OSLAB_PATH/hdc/umounted" ]; then
+	echo umount hdc first
+	ls
+	cd $OSLAB_PATH/hdc/umounted
+	sudo umount $OSLAB_PATH/hdc
+	if [ "$?" != "0" ]; then
+		exit
+	fi
+fi
+
+$OSLAB_PATH/bochs/bochs-gdb -q -f $OSLAB_PATH/bochs/bochsrc.bxrc
