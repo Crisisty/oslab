@@ -9,6 +9,8 @@ elif [ $version == "0.12" ]; then
 	srcpath="$OSLAB_PATH/linux\-0\.12"
 elif [ $version == "0.01" ]; then
 	srcpath="$OSLAB_PATH/linux\-0\.01"
+elif [ $version == "0.00" ]; then
+	srcpath="$OSLAB_PATH/linux\-0\.00"
 else
 	echo version not exist
 	exit
