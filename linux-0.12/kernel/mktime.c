@@ -4,7 +4,7 @@
  *  (C) 1991  Linus Torvalds
  */
 
-#include <time.h>
+#include <time.h>		/* 时间头文件，定义了标准时间数据结构tm和一些处理时间函数原型 */
 
 /*
  * This isn't the library routine, it is only used in the kernel.
@@ -25,12 +25,13 @@
  * 罗马教皇、主教，我什么都不在乎。我是个脾气暴躁的人。
  */
 
-#define MINUTE 60
-#define HOUR (60*MINUTE)
-#define DAY (24*HOUR)
-#define YEAR (365*DAY)
+#define MINUTE 60			/* 1分钟的秒数 */
+#define HOUR (60*MINUTE)	/* 1小时的秒数 */
+#define DAY (24*HOUR)		/* 1天的秒数 */
+#define YEAR (365*DAY)		/* 1年的秒数 */
 
 /* interestingly, we assume leap-years */
+/* 有趣的是我们考虑进了闰年 下面以年为界限，定义了每个月开始的秒数时间 */
 /* 以闰年为基础，每个月开始时的秒数时间 */
 static int month[12] = {
 	0,
@@ -48,7 +49,7 @@ static int month[12] = {
 };
 
 /**
- * 计算从1970年1月1日0时起到开机当日经过的秒数
+ * 计算从1970年1月1日0时起到开机当日经过的秒数，作为开机时间，参数tm中各字段已经在init/main.c中被赋值，信息取自CMOS
  * @param[in]	tm	当前时间
  * @return		返回从1970年1月1日0时起到开机当日经过的秒数	
  */
@@ -61,6 +62,12 @@ long kernel_mktime(struct tm * tm)
 	if (tm->tm_year < 70)
 		tm->tm_year += 100;
 
+	/*
+ 	 * 首先计算1970年到现在经过的年数。因为是2位表示方式，所以会有2000年问题。我们可以简单地在最前面添加一条语句来解决这个问题：if(tm->tm_year<70) tm->tm_year += 100;
+ 	 * 由于UNIX计年份y是从1970年算起。到1972年就是一个闰年，因此过3年（71,72,13）就是第1个闰年，这样从1970年开始的闰年数计算方法就应该是为1+（y - 3）/4，即为（y + 1）/4
+ 	 * res = 这些年经过的秒数时间+每个闰年是多1天的秒数时间+当年到当月时的秒数。另外，month[]数组中已经在2月份的天数中包含进了闰年时的天数，即2月份天数多算了1天。因此，若当年
+ 	 * 不是闰年并且当前月份大于2月份的话，我们就要减去这天。因为从70年开始算起，所以当年是闰年的判断方法是（y + 2）能被4除尽。若不能除尽（有余数）就不是闰年
+	 */
 	year = tm->tm_year - 70;
 /* magic offsets (y+1) needed to get leapyears right.*/
 /* 由于UNIX计年份y是从1970年算起。到1972年就是一个闰年，因此过3年才收到了第1个闰年的影响，
@@ -74,9 +81,9 @@ long kernel_mktime(struct tm * tm)
 	if (tm->tm_mon>1 && ((year+2)%4)) { 
 		res -= DAY;
 	}
-	res += DAY * (tm->tm_mday - 1);
-	res += HOUR * tm->tm_hour;
-	res += MINUTE * tm->tm_min;
-	res += tm->tm_sec;
-	return res;
+	res += DAY * (tm->tm_mday - 1);		/* 再加上本月过去的天数的秒数时间。*/
+	res += HOUR * tm->tm_hour;			/* 再加上当天过去的小时数的秒数时间。*/
+	res += MINUTE * tm->tm_min;			/* 再加上1小时内过去的分钟数的秒数时间。*/
+	res += tm->tm_sec;					/* 再加上1分钟内已过的秒数。*/
+	return res;							/* 即等于从1970年以来经过的秒数时间。*/
 }

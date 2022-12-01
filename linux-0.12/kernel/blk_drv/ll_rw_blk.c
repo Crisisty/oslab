@@ -7,12 +7,12 @@
 /*
  * This handles all read/write requests to block devices
  */
-#include <errno.h>
-#include <linux/sched.h>
-#include <linux/kernel.h>
-#include <asm/system.h>
+#include <errno.h>			/* 错误号头文件。包含系统中各种错误号 */
+#include <linux/sched.h>	/* 调度程序头文件。定义了任务结构task_struct、任务0数据等 */
+#include <linux/kernel.h>	/* 内核头文件。含有一些内核常用函数的原型定义 */
+#include <asm/system.h>		/* 系统头文件。定义设置或修改描述符/中断门等汇编宏 */
 
-#include "blk.h"
+#include "blk.h"			/* 块设备头文件。定义请求数据结构、块设备数据结构和宏等信息 */
 
 /*
  * The request-struct contains all necessary data
