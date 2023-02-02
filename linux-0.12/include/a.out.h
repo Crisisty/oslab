@@ -46,7 +46,9 @@ struct exec {
 /* 文件为需求分页处理（demand-paged，即需求加载）的可执行文件 */
 #define ZMAGIC 0413
 #endif /* not OMAGIC */
+/* 另外还有一个QMAGIC，是为了节约磁盘容量，把盘上执行文件的头结构与代码紧凑存放 */
 
+/* 下面宏用于判断魔数字段的正确性。如果魔数不能被识别，则返回真 */
 #ifndef N_BADMAG
 #define N_BADMAG(x)					\
 	(N_MAGIC(x) != OMAGIC && N_MAGIC(x) != NMAGIC && N_MAGIC(x) != ZMAGIC)
@@ -55,6 +57,7 @@ struct exec {
 #define _N_BADMAG(x)					\
 	(N_MAGIC(x) != OMAGIC && N_MAGIC(x) != NMAGIC && N_MAGIC(x) != ZMAGIC)
 
+/* 宏定义，给出目标文件头结构末端到1024字节之间的长度 */
 #define _N_HDROFF(x) (SEGMENT_SIZE - sizeof (struct exec))
 
 #ifndef N_TXTOFF

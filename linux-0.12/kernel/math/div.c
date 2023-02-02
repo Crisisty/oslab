@@ -8,8 +8,9 @@
  * temporary real division routine.
  */
 
-#include <linux/math_emu.h>
+#include <linux/math_emu.h>													/* 协处理器头文件。定义临时实数结构和387寄存器操作宏等 */
 
+/* 将指针c指向的4字节中内容左移1位 */
 static void shift_left(int * c)
 {
 	__asm__ __volatile__("movl (%0),%%eax ; addl %%eax,(%0)\n\t"
@@ -19,12 +20,17 @@ static void shift_left(int * c)
 		::"r" ((long) c):"ax");
 }
 
+/* 将指针c指向的4字节中内容右移1位 */
 static void shift_right(int * c)
 {
 	__asm__("shrl $1,12(%0) ; rcrl $1,8(%0) ; rcrl $1,4(%0) ; rcrl $1,(%0)"
 		::"r" ((long) c));
 }
 
+/*
+ * 16字节减法运算
+ * 16字节减法运算，（a-b) -> a。最后根据是否有借位（CF=1）来设置ok标志。若无借位则ok=1，否则ok=0
+ */
 static int try_sub(int * a, int * b)
 {
 	char ok;
@@ -37,6 +43,10 @@ static int try_sub(int * a, int * b)
 	return ok;
 }
 
+/*
+ * 16字节除法
+ * 参数a/b->c。利用减法模拟多字节除法
+ */
 static void div64(int * a, int * b, int * c)
 {
 	int tmp[4];
@@ -60,6 +70,10 @@ static void div64(int * a, int * b, int * c)
 	}
 }
 
+/*
+ * 仿真浮点指令FDIV
+ * 执行临时实数的除法运算：src1/src2->result
+ */
 void fdiv(const temp_real * src1, const temp_real * src2, temp_real * result)
 {
 	int i,sign;

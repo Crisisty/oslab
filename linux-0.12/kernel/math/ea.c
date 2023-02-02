@@ -7,12 +7,14 @@
 /*
  * Calculate the effective address.
  */
+/* 计算有效地址 */
 
-#include <stddef.h>
+#include <stddef.h>											/* 标准定义头文件。本程序使用了其中的offsetof()定义 */
 
-#include <linux/math_emu.h>
-#include <asm/segment.h>
+#include <linux/math_emu.h>									/* 协处理器头文件。定义临时实数结构和387寄存器操作宏等 */
+#include <asm/segment.h>									/* 段操作头文件。定义了有关段寄存器操作的嵌入式汇编函数 */
 
+/* info结构中各个寄存器在结构中的偏移位置。offsetof()用于求指定字段在结构中的偏移位置。参见include/stddef.h文件 */
 static int __regoffset[] = {
 	offsetof(struct info,___eax),
 	offsetof(struct info,___ecx),
@@ -24,23 +26,31 @@ static int __regoffset[] = {
 	offsetof(struct info,___edi)
 };
 
+/* 取info结构中指定位置处寄存器内容 */
 #define REG(x) (*(long *)(__regoffset[(x)]+(char *) info))
 
+/* 求2字节寻址模式中第2操作数指示字节SIB（Scale，Index，Base）的值 */
 static char * sib(struct info * info, int mod)
 {
 	unsigned char ss,index,base;
 	long offset = 0;
 
+	/* 首先从用户代码段中取得SIB字节，然后取出各个字段比特位值 */
 	base = get_fs_byte((char *) EIP);
 	EIP++;
-	ss = base >> 6;
-	index = (base >> 3) & 7;
-	base &= 7;
+	ss = base >> 6;											/* 比例因子大小ss */
+	index = (base >> 3) & 7;								/* 索引值索引代号index */
+	base &= 7;												/* 基地址代号base */
+	/* 如果索引代号为0b100，表示无索引偏移值。否则索引偏移值offset=对应寄存器内容*比例因子 */
 	if (index == 4)
 		offset = 0;
 	else
 		offset = REG(index);
 	offset <<= ss;
+	/* 
+	 * 如果上一MODRM字节中的MOD不为零，或者Base不等于0b101，则表示有偏移值在base指定的寄存器中。因此偏移offset需要再加上base对应寄存器中的内容。如果MOD=1，则表示偏移值为1字节
+	 * 否则，若MOD=2，或者base=0b101，则偏移值为4字节
+	 */
 	if (mod || base != 5)
 		offset += REG(base);
 	if (mod == 1) {
@@ -50,21 +60,28 @@ static char * sib(struct info * info, int mod)
 		offset += (signed) get_fs_long((unsigned long *) EIP);
 		EIP += 4;
 	}
+	/* 最后保存并返回偏移值 */
 	I387.foo = offset;
 	I387.fos = 0x17;
 	return (char *) offset;
 }
 
+/* 根据指令中寻址模式字节计算有效地址值 */
 char * ea(struct info * info, unsigned short code)
 {
 	unsigned char mod,rm;
 	long * tmp = &EAX;
 	int offset = 0;
 
-	mod = (code >> 6) & 3;
-	rm = code & 7;
+	/*
+	 * 首先取代码中的MOD字段和R/M字段值。如果MOD=0b11，表示是单字节指令，没有偏移字段。如果R/M字段=0b100，并且MOD不为0b11，表示是2字节地址模式寻址，
+	 * 因此调用sib()求出偏移值并返回即可。
+	 */
+	mod = (code >> 6) & 3;									/* MOD字段 */
+	rm = code & 7;											/* R/M字段 */
 	if (rm == 4 && mod != 3)
 		return sib(info,mod);
+	/* 如果R/M字段为0b101，并且MOD位0，表示是单字节地址模式编码且后随32字节偏移值。于是取出用户代码中4字节偏移值，保存并返回之 */
 	if (rm == 5 && !mod) {
 		offset = get_fs_long((unsigned long *) EIP);
 		EIP += 4;
@@ -72,6 +89,7 @@ char * ea(struct info * info, unsigned short code)
 		I387.fos = 0x17;
 		return (char *) offset;
 	}
+	/* 对于其余情况，则根据MOD进行处理。首先去除R/M代码对应寄存器内容的值作为指针tmp。对于MOD=0，无偏移值。对于MOD=1，代码后随1字节偏移值。对于MOD=2，代码后有4字节偏移值。最后保存并返回有效地址值 */
 	tmp = & REG(rm);
 	switch (mod) {
 		case 0: offset = 0; break;
