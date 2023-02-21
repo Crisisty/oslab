@@ -3,8 +3,8 @@
  *
  *  (C) 1991  Linus Torvalds
  */
-#include <linux/sched.h>
-#include <sys/stat.h>
+#include <linux/sched.h>	/* 调度程序头文件。定义了任务结构task_struct、任务0数据 */
+#include <sys/stat.h>		/* 文件状态头文件，含有文件或文件系统状态结构stat{}和常量。*/
 
 /** 
  * 释放所有一次间接块
@@ -17,7 +17,7 @@ static int free_ind(int dev, int block)
 	struct buffer_head * bh;
 	unsigned short * p;
 	int i;
-	int block_busy;
+	int block_busy;		/* 有逻辑块没有被释放的标志 */
 
 	/* 如果逻辑块号为0，则返回 */
 	if (!block) {
@@ -43,7 +43,7 @@ static int free_ind(int dev, int block)
 	if (block_busy) {
 		return 0;
 	} else {
-		return free_block(dev, block);		/* 成功则返回1，否则返回0 */
+		return free_block(dev, block);		/* 释放设备上指定逻辑块号的磁盘块，成功则返回1，否则返回0 */
 	}
 }
 
@@ -59,8 +59,9 @@ static int free_dind(int dev, int block)
 	struct buffer_head * bh;
 	unsigned short * p;
 	int i;
-	int block_busy;
+	int block_busy;			/* 有逻辑块没有被释放的标志 */
 
+	/* 如果逻辑块号为0，则返回 */
 	if (!block) {
 		return 1;
 	}
@@ -130,6 +131,7 @@ repeat:
 	}
 	/* 设置i节点已修改标志，并且如果还有逻辑块由于“忙”而没有被释放，则把当前进程运行时间
 	 片置0，以让当前进程先被切换去运行其他进程，稍等一会再重新执行释放操作 */
+	/* 最后把文件修改时间和i节点改变时间设置为当前时间。宏CURRENT_TIME定义在头文件linux/shed.h，定义为（startup_time+jiffies/HZ），以取得从1970:0:0:0开始到现在为止经过的秒数 */
 	inode->i_dirt = 1;
 	if (block_busy) {
 		current->counter = 0;			/* 当前进程时间片置0 */
