@@ -4,19 +4,19 @@
  *  (C) 1991  Linus Torvalds
  */
 
-#include <string.h>
-#include <sys/stat.h>
+#include <string.h>			/* 字符串头文件。主要定义了一些有关字符串操作的嵌入函数。这里使用了其中的memeset()函数 */
+#include <sys/stat.h>		/* 文件状态头文件。含有文件或文件系统状态结构stat{}和常量 */
 
-#include <linux/sched.h>
-#include <linux/kernel.h>
-#include <linux/mm.h>
-#include <asm/system.h>
+#include <linux/sched.h>	/* 调度程序头文件。定义了任务结构task_struct、任务0的数据，还有一些有关描述符参数设置和获取的嵌入式汇编函数宏语句 */
+#include <linux/kernel.h>	/* 内核头文件。含有一些内核常用函数的原型定义 */
+#include <linux/mm.h>		/* 内存管理头文件。含有页面大小定义和一些页面释放函数原型 */
+#include <asm/system.h>		/* 系统头文件。定义了设置或修改描述符/中断门等的嵌入式汇编宏 */
 
 /* 设置数据块总数指针数组。每个指针项指向指定主设备号的总块数数组hd_sizes[]。该总块数数组每一项对
  应子设备号确定的一个子设备上所拥有的数据块总数(1块大小 = 1KB) */
 extern int *blk_size[];
 
-struct m_inode inode_table[NR_INODE]={{0, }, };		/* 内存中i节点表(NR_INODE=64项) */
+struct m_inode inode_table[NR_INODE]={{0, }, };		/* 内存中i节点表(NR_INODE=32项) */
 
 static void read_inode(struct m_inode *inode);		/* 读指定i节点号的i节点信息 */
 static void write_inode(struct m_inode *inode);		/* 写i节点信息到高速缓冲中 */
@@ -50,7 +50,7 @@ static inline void lock_inode(struct m_inode *inode)
 	while (inode->i_lock) {
 		sleep_on(&inode->i_wait);
 	}
-	inode->i_lock = 1;
+	inode->i_lock = 1;			/* 置锁定标志 */
 	sti();
 }
 
@@ -68,6 +68,7 @@ static inline void unlock_inode(struct m_inode *inode)
 
 /** 
  * 释放设备dev在内存i节点表中的所有i节点
+ * 扫描内存中的i节点表数组，如果某项是指定设备使用的i节点就释放之
  * @param[in]	dev		设备号
  * @retval		void
  */
@@ -76,9 +77,15 @@ void invalidate_inodes(int dev)
 	int i;
 	struct m_inode *inode;
 
+	/*
+	 * 首先让指针指向内存i节点表指针数组首项，然后扫描其中的所有i节点。针对其中每个i节点，先等待
+	 * 该i节点解锁可用（若目前正被上锁的话），再判断是否属于指定设备的i节点。如果是则释放之，即把
+	 * i节点的设备号字段i_dev置0。期间还会查看看它是否还被使用着（引用计数是否不为0），若是则显示
+	 * 警告信息。inode = 0 + inode_table 赋值等同于"inode_table"、"&inode_table[0]"。不过这样写可更明了些
+	 */
 	inode = 0 + inode_table;		/* 指向i节点表指针数组首项 */
 	for(i = 0; i < NR_INODE; i++, inode++) {
-		wait_on_inode(inode);
+		wait_on_inode(inode);		/* 等待该i节点可用（解锁） */
 		if (inode->i_dev == dev) {
 			if (inode->i_count)	{	/* 若其引用数不为0，则显示出错警告 */
 				printk("inode in use on removed disk\n\r");
@@ -98,9 +105,14 @@ void sync_inodes(void)
 	int i;
 	struct m_inode *inode;
 
+	/*
+	 * 首先让指针指向内存i节点表指针数组首项，然后扫描整个i节点。针对其中每个i节点，先等待
+	 * 该i节点解锁可用（若正被上锁的话），然后判断该i节点是否已被修改并且不是管道节点。
+	 * 若是这种情况则将该i节点写入高速缓冲区中。缓冲区管理程序buffer.c会在适当时机将它们写入盘中
+	 */
 	inode = 0 + inode_table;		/* 指向i节点表指针数组首项 */
-	for(i = 0; i < NR_INODE; i++, inode++) {
-		wait_on_inode(inode);
+	for(i = 0; i < NR_INODE; i++, inode++) {	/* 扫描i节点表指针数组 */
+		wait_on_inode(inode);	/* 等待该i节点可用（解锁） */
 		/* 判断该i节点是否已被修改并且不是管道节点 */
 		if (inode->i_dirt && !inode->i_pipe) {
 			write_inode(inode);		/* 则写盘(实际是写入缓冲区中) */
@@ -109,9 +121,10 @@ void sync_inodes(void)
 }
 
 /**
- * 文件数据块映射到盘块的处理操作
+ * 文件数据块映射到盘块的处理操作。（block位图处理函数，bmap - block map）
  * 把指定的文件数据块block对应到设备上逻辑块上，并返回逻辑块号。如果创建标志create置位，则在设
  * 备上对应逻辑块不存在时就申请新磁盘块，返回文件数据块block对应在设备上的逻辑块号(盘块号)。
+ * 该函数分四个部分进行处理：（1）参数有效性检查；（2）直接快处理；（3）一次间接块处理；（4）二次间接块处理
  * @param[in]	inode	文件的i节点指针
  * @param[in]	block	文件中的数据块号(索引从0开始)
  * @param[in]	create	创建块标志
@@ -122,6 +135,7 @@ static int _bmap(struct m_inode * inode, int block, int create)
 	struct buffer_head * bh;
 	int i;
 
+	/* 首先判断参数的有效性。如果文件数据块号block小于0，则停机。如果块号大于（直接块数+间接块数+二次间接块数），超出了文件系统表示范围，则停机 */
 	if (block < 0) {
 		panic("_bmap: block<0");
 	}
@@ -130,6 +144,12 @@ static int _bmap(struct m_inode * inode, int block, int create)
 		panic("_bmap: block>big");
 	}
 	
+	/*
+	 * 然后根据文件块号的大小值和是否设置了创建标志分别进行处理。如果该块号小于7，则使用直接快表示。此时，
+	 * 如果创建标志置位，并且i节点中对应该块的逻辑块字段为0，则向相应设备申请一磁盘块（逻辑块），并且将盘上
+	 * 的该盘块号填入逻辑块字段中。然后设置i节点改变时间，置i节点已修改标志。最后返回逻辑块号，函数new_block()
+	 * 定义在bitmap.c中
+	 */
 	/**** block < 7，即直接块 ****/
 	if (block < 7) {
 		/* create=1且i节点中对应该块的逻辑块字段为0,则需申请一磁盘块 */
@@ -142,6 +162,13 @@ static int _bmap(struct m_inode * inode, int block, int create)
 		return inode->i_zone[block];
 	}
 	
+	/*
+	 * 如果该块号>=7，且小于(7 + 512)，则说明使用的是一次间接块。于是下面对一次间接块进行处理。如果是
+	 * 创建操作，并且该i节点的间接块字段i_zone[7]是0，表明文件是首次使用一次间接块，于是需要申请一磁盘块
+	 * 用于存放间接块信息，并将此实际磁盘块号填入一次间接块字段中。然后设置i节点已修改标志和修改时间。如果创建
+	 * 时申请磁盘块失败，则此时i节点间接块字段i_zone[7]为0，则返回0，或者不是创建，但i_zone[7]原来就为0，
+	 * 表明i节点中没有间接块，于是映射磁盘块失败，返回0退出
+	 */
 	/**** 7 <= block < 7+512，即一次间接块 ****/
 	block -= 7;
 	if (block < 512) {
@@ -157,6 +184,12 @@ static int _bmap(struct m_inode * inode, int block, int create)
 		if (!inode->i_zone[7]) {
 			return 0;
 		}
+		/*
+		 * 现在读取设备上该i节点的一次间接块，并在其上读取第block项中的逻辑块号i（间接块上每项占2个字节）。
+		 * 如果是创建操作并且所取得的逻辑块号为0的话，则需要申请一磁盘块，并让间接块中的第block项等于该新逻辑
+		 * 块块号。然后置位间接块的已修改标志。如果不是创建操作，则i就是需要映射（寻找）的逻辑块号。最后释放该
+		 * 间接块占用的缓冲块，并返回磁盘上新申请或原有的对应block的逻辑块块号
+		 */
 		/* 读取设备上该i节点的一次间接块 */
 		if (!(bh = bread(inode->i_dev, inode->i_zone[7]))) {
 			return 0;
@@ -175,6 +208,14 @@ static int _bmap(struct m_inode * inode, int block, int create)
 		return i;
 	}
 	
+	/*
+	 * 若程序运行到此，则表明数据块属于二次间接块。其处理过程与一次间接块类似。
+	 * 下面是对二次间接块的处理。首先将block再减去间接块所容纳的块数（512），然后根据是否设置了创建标志进行
+	 * 创建或寻找处理。如果是新创建并且i节点的二次间接块字段为0，则需要申请一磁盘块用于存放二次间接块的一级块信息，
+	 * 并将此实际磁盘块号填入二次间接块字段中。之后，置i节点已修改标志和秀修改时间。同样地，如果创建时申请磁盘块失败，
+	 * 则此时i节点二次间接块字段i_zone[8]为0，则返回0，或者不是创建，但i_zone[8]原来就为0，表明i节点中没有间接块
+	 * 于是映射磁盘块失败，返回0退出
+	 */
 	/**** 到这里，block已经减去7+512了，二次间接块 ****/
 	block -= 512;
 	/* create && inode->i_zone[8]=0，则需申请一个磁盘块用于存放二次间接块的一级块信息 */
@@ -189,6 +230,12 @@ static int _bmap(struct m_inode * inode, int block, int create)
 	if (!inode->i_zone[8]){
 		return 0;
 	}
+	/*
+	 * 现在读取设备上该i节点的二次间接块，并取该块的一级块上第（block/512）项中的逻辑块号i。如果是创建操作，并且二次间接块
+	 * 的一级块上第（block/512）项中的逻辑块号为0的话，则需申请一磁盘块作为二次间接块的二级块i，并让二次间接块的一级块种第
+	 * （block/512）项等于二级块的块号i。然后置位二次间接块的一级块已修改标志，并释放二次间接块的一级块，如果不是创建操作，
+	 * 则i就是需要映射（寻找）的逻辑块号
+	 */
 	/* 读取二次间接块的一级块 */
 	if (!(bh = bread(inode->i_dev, inode->i_zone[8]))) {
 		return 0;
@@ -203,6 +250,10 @@ static int _bmap(struct m_inode * inode, int block, int create)
 			bh->b_dirt=1; /* 置位一级块的已修改标志 */
 		}
 	}
+	/* 
+	 * 如果二次间接块的二级块块号为0，表示申请磁盘块失败或者原来对应块号就为0，则返回0退出。
+	 * 否则就从设备上读取二次间接块的二级块，并取该二级块上第block项中的逻辑块号
+	 */
 	brelse(bh);	/* 释放二次间接块的一级块 */
 	if (!i) {
 		return 0;
@@ -213,6 +264,11 @@ static int _bmap(struct m_inode * inode, int block, int create)
 	}
 	/* 取低9位，即第block项在二级块中的位置 */
 	i = ((unsigned short *)bh->b_data)[block & 511];
+	/*
+	 * 如果创建标志是置位的，并且二级块的第block项中逻辑块号为0的话，则申请一磁盘块，作为最终存放数据信息的块，
+	 * 并让二级块中的第block项等于该新逻辑块块号（i）。然后置位二级块的已修改标志。最后释放该二次间接块的二级块，
+	 * 返回磁盘上新申请的或原有的对应block的逻辑块块号
+	 */
 	/* 第block项中逻辑块号为0的话，则申请一磁盘块(逻辑块)，作为最终存放数据信息的块 */
 	if (create && !i) {
 		if ((i = new_block(inode->i_dev))) {
@@ -379,8 +435,8 @@ struct m_inode * get_pipe_inode(void)
 	if (!(inode = get_empty_inode())) {
 		return NULL;
 	}
-	/* 然后为该i节点申请一页内存。如果已没有空闲内存，则释放该i节点，并返回NULL。*/
-	if (!(inode->i_size = get_free_page())) {
+	/* 然后为该i节点申请一页内存。并让节点的i_size字段指向该页面。如果已没有空闲内存，则释放该i节点，并返回NULL。*/
+	if (!(inode->i_size = get_free_page())) {	/* 节点的i_size字段指向缓冲区 */
 		inode->i_count = 0;
 		return NULL;
 	}
@@ -396,6 +452,8 @@ struct m_inode * get_pipe_inode(void)
 /**
  * 取得一个i节点
  * 从设备上读取指定节点号的i节点结构内容到内存i节点表中，并且返回该i节点指针。
+ * 首先在位于高速缓冲区中的i节点表中搜寻，若找到指定节点号的i节点则经过一些判断处理后返回
+ * 该i节点指针。否则从设备dev上读取指定i节点号的i节点信息放入i节点表中，并返回该i节点指针
  * @param[in]	dev		设备号
  * @param[in]	nr		i节点号
  * @retval		i节点指针
@@ -412,7 +470,7 @@ struct m_inode * iget(int dev, int nr)
 	empty = get_empty_inode();
 	/* 扫描i节点表。寻找参数指定节点号nr的i节点，并递增该节点的引用次数。如果当前扫描i节点的设备
 	 号不等于指定的设备号或者节点号不等于指定的节点号，则继续扫描 */
-	inode = inode_table;
+	inode = inode_table;	/* 指向inode表首 */
 	while (inode < NR_INODE + inode_table) {
 		if (inode->i_dev != dev || inode->i_num != nr) {
 			inode++;
@@ -475,6 +533,9 @@ struct m_inode * iget(int dev, int nr)
 /**
  * 读取指定i节点信息
  * 从设备上读取含有指定i节点信息的i节点盘块，然后复制到指定的i节点结构中。
+ * 为了确定i节点所在盘块的逻辑块号，必须首先读取相应设备上的超级块，以获取用于计算逻辑块号的每块
+ * i节点数据信息INODES_PER_BLOCK。在计算出i节点所在的逻辑块号后，就把该逻辑块读入一缓冲块中。
+ * 然后把缓冲块中相应位置处的i节点内容复制到参数指定的位置处
  * @param[in]	*inode	i节点指针
  * @retval		void
  */
@@ -484,8 +545,9 @@ static void read_inode(struct m_inode * inode)
 	struct buffer_head * bh;
 	int block;
 
+	/* 首先锁定该i节点，并取得该节点所在设备的超级块 */
 	lock_inode(inode);
-	if (!(sb = get_super(inode->i_dev))) {	/* 或取该i节点所在设备的超级块 */
+	if (!(sb = get_super(inode->i_dev))) {	/* 获取该i节点所在设备的超级块 */
 		panic("trying to read inode without dev");
 	}
 
@@ -524,6 +586,9 @@ static void read_inode(struct m_inode * inode)
 /**
  * 将i节点信息写入缓冲区中
  * 该函数把参数指定的i节点写入缓冲区相应的缓冲块中（待缓冲区刷新时会写入盘中）。
+ * 为了确定i节点所在的设备逻辑块号（或缓冲块），必须首先读取相应设备上的超级块，以获取用于计算逻辑块号的每块
+ * i节点数信息INODE_PER_BLOCK。在计算出i节点所在的逻辑块号后，就把该逻辑块读入一缓冲块中。然后把i节点内容
+ * 复制到缓冲块的相应位置处
  * @param[in]	*inode		待写入的i节点指针
  * @retval		void
  */
