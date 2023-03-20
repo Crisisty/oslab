@@ -150,12 +150,12 @@ int block_read(int dev, unsigned long * pos, char * buf, int count)
 		p = offset + bh->b_data;
 		offset = 0;
 		*pos += chars;
-		read += chars;
+		read += chars;			/* 累计读入字节数 */
 		count -= chars;
 		while (chars-->0) {
 			put_fs_byte(*(p++), buf++);
 		}
 		brelse(bh);
 	}
-	return read;
+	return read;				/* 返回已读取的字节数，正常退出 */
 }
