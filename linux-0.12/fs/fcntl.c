@@ -4,16 +4,16 @@
  *  (C) 1991  Linus Torvalds
  */
 
-#include <string.h>
-#include <errno.h>
-#include <linux/sched.h>
-#include <linux/kernel.h>
-#include <asm/segment.h>
+#include <string.h>			/* 字符串头文件。主要定义了一些有关字符串操作的嵌入函数。 */
+#include <errno.h>			/* 错误号头文件。包含系统中各种出错号。 */
+#include <linux/sched.h>	/* 调度程序头文件。定义了任务结构task_struct、任务0的数据等 */
+#include <linux/kernel.h>	/* 内核头文件。含有一些内核常用函数的原型定义 */
+#include <asm/segment.h>	/* 段操作头文件。定义了有关段寄存器操作的嵌入式汇编函数 */
 
-#include <fcntl.h>
-#include <sys/stat.h>
+#include <fcntl.h>			 /* 文件控制头文件。文件及其描述符的操作控制常数符号的定义。*/
+#include <sys/stat.h>		/* 文件状态头文件。含有文件或文件系统状态结构stat{}和常量 */
 
-extern int sys_close(int fd);
+extern int sys_close(int fd);		/* 关闭文件系统调用 */
 
 /**
  * 复制文件句柄(文件描述符)
@@ -23,12 +23,21 @@ extern int sys_close(int fd);
  */
 static int dupfd(unsigned int fd, unsigned int arg)
 {
+	/*
+	 * 首先检查函数参数的有效性。如果文件句柄值大于一个程序最多打开文件数NR_OPEN，或者该句柄的文件结构不存在，则返回
+	 * 出错码并退出。如果指定的新句柄值arg大于最多打开文件数，也返回出错码并退出。注意，实际上文件句柄就是进程文件结构
+	 * 指针数组项索引号
+	 */
 	if (fd >= NR_OPEN || !current->filp[fd]) {
 		return -EBADF; /* 文件句柄错误 */
 	}
 	if (arg >= NR_OPEN) {
 		return -EINVAL; /* 参数非法 */
 	}
+	/*
+	 * 然后在当前进程的文件结构指针数组中寻找索引号等于或大于arg，但还没有使用的项。若找到的新句柄值arg大于最多打开文件数
+	 * （即没有空闲项），则返回出错码并退出
+	 */
 	/* 找到一个比arg大的最小的未使用的句柄值 */
 	while (arg < NR_OPEN) {
 		if (current->filp[arg]) {
@@ -40,6 +49,10 @@ static int dupfd(unsigned int fd, unsigned int arg)
 	if (arg >= NR_OPEN) {
 		return -EMFILE;	/* 打开文件太多 */
 	}
+	/*
+	 * 否则针对找到的空闲项（句柄），在执行时关闭标志位图close_on_exec中复位该句柄位。即在运行exec()类函数时，不会关闭
+	 * 用dup()创建的句柄。并令该文件结构指针等于原句柄fd的指针，并且将文件引用数增1。最后返回新的文件句柄arg
+	 */
 	current->close_on_exec &= ~(1<<arg);
 	(current->filp[arg] = current->filp[fd])->f_count++;
 	return arg;
@@ -53,12 +66,13 @@ static int dupfd(unsigned int fd, unsigned int arg)
  */
 int sys_dup2(unsigned int oldfd, unsigned int newfd)
 {
-	sys_close(newfd);
-	return dupfd(oldfd, newfd);
+	sys_close(newfd);		/* 若句柄newfd已经打开，则首先关闭之 */
+	return dupfd(oldfd, newfd);		/* 复制并返回新句柄 */
 }
 
 /**
  * 复制文件句柄
+ * 复制指定文件句柄oldfd，新句柄的值是当前最小的未用句柄值
  * @param[in]	fildes	欲复制的指定文件句柄
  * @retval		新文件句柄(当前最小的未用句柄值)或出错码
  */
@@ -88,6 +102,10 @@ int sys_fcntl(unsigned int fd, unsigned int cmd, unsigned long arg)
 {	
 	struct file * filp;
 
+	/*
+	 * 首先给出的文件句柄的有效性。然后根据不同命令cmd进行分别处理。如果文件句柄值大于一个进程最多打开文件数NR_OPEN,
+	 * 或者该句柄的文件结构指针为空，则返回出错码并退出
+	 */
 	if (fd >= NR_OPEN || !(filp = current->filp[fd])) {
 		return -EBADF;
 	}

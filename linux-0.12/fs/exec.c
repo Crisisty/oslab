@@ -614,11 +614,21 @@ restart_interp:
 		retval = -ENOEXEC;
 		goto exec_error2;
 	}
+	/*
+	 * 另外，如果执行文件中代码开始处没有位于1个页面（1024字节）边界处，则也不能执行。因为需求页（Demand paging）技术要求加载执行文件内容时
+	 * 以页面为单位，因此要求执行文件映射中代码和数据都从页面边界处开始
+	 */
 	if (N_TXTOFF(ex) != BLOCK_SIZE) {
 		printk("%s: N_TXTOFF != BLOCK_SIZE. See a.out.h.", filename);
 		retval = -ENOEXEC;
 		goto exec_error2;
 	}
+	/*
+	 * 如果sh_bang标志没有设置，则复制指定个数的命令行参数和环境字符串到参数和环境空间中。若sh_bang标志已经设置，则表明是将运行脚本解释程序，
+	 * 此时环境变量页面已经复制，无须再复制。同样，若sh_bang没有置位而需要复制的话，那么此时指针p随着复制信息增加而逐渐向小地址方向移动，
+	 * 因此这两个复制串函数执行完后，环境参数串信息块位于程序参数串信息块上方，并且p指向程序的第1个参数串。事实上，p是128KB参数和环境空间
+	 * 中的偏移值。因此如果p=0，则表示环境变量与参数空间页面已经被占满，容纳不了
+	 */
 	if (!sh_bang) {
 		p = copy_strings(envc, envp, page, p, 0);
 		p = copy_strings(argc, argv, page, p, 0);
@@ -631,6 +641,18 @@ restart_interp:
 /* note that current->library stays unchanged by an exec */
 /* OK，下面开始就没有返回的地方了 */
 /* 注意，exec类函数不会改动 current->library */
+	/*
+	 * 前面我们根据函数参数提供的信息，对运行执行文件的命令行参数和环境空间进行了设置，但还没有为执行文件做过什么实质性的工作，即还没有做过
+	 * 为执行文件初始化进程任务结构信息、建立页表等工作。现在我们就来做这些工作。由于执行文件直接使用当前进程的“躯壳”，即当前进程将被改造成
+	 * 执行文件的进程，因此我们需要首先释放当前进程占用的某些系统资源，包括关闭指定的已打开文件、占用的页表和内存页面等。然后根据执行文件头
+	 * 结构信息修改当前进程使用的局部描述符表LDT中描述的内容，重新设置代码段和数据段描述符的限长，再利用前面处理得到的e_uid和e_gid等信息
+	 * 来设置进程任务结构中相关的字段。最后把执行本次系统调用程序的返回地址eip[]指向执行文件中代码的起始位置。这样当本系统调用退出返回后
+	 * 就会去运行新执行文件的代码了。注意，虽然此时新执行文件的代码和数据还没有加载到内存中，但其参数和环境块已经在copy_strings()中使用
+	 * get_free_page()分配了物理内存页来保存数据，并在change_ldt()函数中使用put_page()存放到进程逻辑空间的末端。另外，在create_tables()
+	 * 中也会由于在用户栈上存放参数和环境指针表而引起缺页异常，从而内存管理程序也会就此为用户栈空间映射物理内存页。
+	 * 这里我们首先放回进程原执行程序的i节点，并且让进程executable字段指向新执行文件的节点。然后复位原进程的所有信号处理句柄，但对于SIG_IGN
+	 * 句柄无须复位。再根据设定的执行时关闭句柄（close_on_exec）位图标志，关闭指定的打开文件并复位该标志
+	 */
 	if (current->executable) {
 		iput(current->executable);
 	}
@@ -651,6 +673,12 @@ restart_interp:
 		}
 	}
 	current->close_on_exec = 0;
+	/*
+	 * 然后根据当前进程指定的基地址和限长，释放原来程序的代码段和数据段所对应的内存页表指定的物理内存页面及页表本身。此时
+	 * 新执行文件并没有占用主存区任何页面，因此在处理器真正运行新执行文件代码时就会引起缺页中断。此时内存管理程序即会执行
+	 * 缺页处理而为新执行文件申请内存页面和设置相关页表项，并把相关执行文件页面读入内存中。如果“上次任务使用了协处理器”指向
+	 * 的是当前进程，则将其置空，并复位使用了协处理器的标志
+	 */
 	/* 释放原进程的代码段和数据段占用的物理页面及页表 */
 	free_page_tables(get_base(current->ldt[1]), get_limit(0x0f));
 	free_page_tables(get_base(current->ldt[2]), get_limit(0x17));
@@ -658,9 +686,21 @@ restart_interp:
 		last_task_used_math = NULL;
 	}
 	current->used_math = 0;
+	/*
+	 * 然后我们根据新执行文件头结构中的代码长度字段a_text的值，来修改局部表中描述符基址和段限长，并将128KB的参数和环境空间
+	 * 页面放置在数据段末端。执行下面语句之后，p此时更改成以数据段起始处为原点的偏移值，但仍指向参数和环境空间数据开始处，即已
+	 * 转换成为栈指针值。然后调用内部函数create_tables()，在栈空间中创建环境和参数变量指针表，供程序的main()作为参数使用，
+	 * 并返回该栈指针
+	 */
 	p += change_ldt(ex.a_text, page);
 	p -= LIBRARY_SIZE + MAX_ARG_PAGES * PAGE_SIZE;
 	p = (unsigned long) create_tables((char *)p, argc, envc);
+	/*
+	 * 接着再修改进程各字段值为新执行文件的信息。即令进程任务结构代码尾字段end_code等于执行文件的代码段长度a_text；数据尾字段
+	 * end_data等于执行文件的代码段长度加数据段长度（a_data+a_text）；并令进程堆结尾字段brk=a_text+a_data+a_bss；brk用于
+	 * 指明进程当前数据段（包括未初始化数据部分）末端位置，供内核为进程分配内存时指定分配开始位置。然后设置进程栈开始字段为栈指针
+	 * 所在页面，并重新设置进程的有效用户id和有效组id
+	 */
 	current->brk = ex.a_bss +
 		(current->end_data = ex.a_data +
 		(current->end_code = ex.a_text));
@@ -669,14 +709,17 @@ restart_interp:
 	current->sgid = current->egid = e_gid;
 	/* 将原调用系统中断的程序在堆栈上的代码指针替换为指向新执行程序的入口点，并将栈指针
 	 替换为新执行文件的栈指针 */
-	eip[0] = ex.a_entry;		/* eip, magic happens :-) */
-	eip[3] = p;					/* stack pointer */
+	/*
+	 * 此后返回指令将弹出这些栈数据并使得CPU去执行新执行文件，因此不会返回到原调用系统中断的程序中去了
+	 */
+	eip[0] = ex.a_entry;		/* eip, magic happens :-) */	/* eip，魔法起作用了 */
+	eip[3] = p;					/* stack pointer */	/* esp，堆栈指针 */
 	return 0;
 exec_error2:
-	iput(inode);
+	iput(inode);	/* 放回i节点 */
 exec_error1:
 	for (i = 0; i < MAX_ARG_PAGES; i ++) {
-		free_page(page[i]);
+		free_page(page[i]);		/* 释放存放参数和环境串的内存页面 */
 	}
-	return(retval);
+	return(retval);		/* 返回出错码 */
 }
