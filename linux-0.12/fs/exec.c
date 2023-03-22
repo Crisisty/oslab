@@ -27,20 +27,20 @@
  * 我可再一次自豪地说，linux经得起修改：只用了不到2小时的工作就完全实现了需求加载处理。
  */
 
-#include <signal.h>
-#include <errno.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <a.out.h>
+#include <signal.h>			/* 信号头文件。定义信号符号常量，信号结构以及信号操作函数原型 */
+#include <errno.h>			/* 错误号头文件。包含系统中各种出错号。 */
+#include <string.h>			/* 字符串头文件。主要定义了一些有关字符串操作的嵌入函数。 */
+#include <sys/stat.h>		/* 文件状态头文件。含有文件或文件系统状态结构stat{}和常量 */
+#include <a.out.h>			/* a.out头文件。定义了a.out执行文件格式和一些宏 */
 
-#include <linux/fs.h>
-#include <linux/sched.h>
-#include <linux/kernel.h>
-#include <linux/mm.h>
-#include <asm/segment.h>
+#include <linux/fs.h>		/* 文件系统头文件。定义文件表结构（file,buffer_head,m_inode等） */
+#include <linux/sched.h>	/* 调度程序头文件。定义了任务结构task_struct、任务0的数据等 */
+#include <linux/kernel.h>	/* 内核头文件。含有一些内核常用函数的原型定义 */
+#include <linux/mm.h>		/* 内存管理头文件。含有页面大小定义和一些页面释放函数原型 */
+#include <asm/segment.h>	/* 段操作头文件。定义了有关段寄存器操作的嵌入式汇编函数 */
 
-extern int sys_exit(int exit_code);
-extern int sys_close(int fd);
+extern int sys_exit(int exit_code);		/* 退出程序系统调用，kernel/exit.c */
+extern int sys_close(int fd);		/* 关闭文件系统调用，fs/open.c */
 
 /*
  * MAX_ARG_PAGES defines the number of pages allocated for arguments
@@ -65,19 +65,29 @@ int sys_uselib(const char * library)
 	struct m_inode * inode;
 	unsigned long base;
 
+	/*
+	 * 首先判断当前进程是否普通进程。这是通过查看当前进程的空间长度来做到的。因为普通进程的空间长度被设置
+	 * 为TASK_SIZE（64MB）。因此若进程逻辑地址空间长度不等于TASK_SIZE则返回出错码（无效参数）。否则取
+	 * 库文件i节点inode。若库文件名指针空，则设置inode等于NULL
+	 */
 	/* 根据进程的空间长度，判断是否为普通进程 */
 	if (get_limit(0x17) != TASK_SIZE) {
 		return -EINVAL;
 	}
 	if (library) {
 		if (!(inode = namei(library))) {		/* get library inode */
-			return -ENOENT;
+			return -ENOENT;		/* 取库文件i节点 */
 		}
 	} else {
 		inode = NULL;
 	}
 /* we should check filetypes (headers etc), but we don't */
 /* 我们应该检查一下文件类型（如头部信息等），但是我们还没有这样做。*/
+	/*
+	 * 然后放回进程原库文件i节点，并预置进程库i节点字段为空。接着取得进程的库代码所在位置，并释放原库代码的页表和所占
+	 * 用的内存页面。最后让进程库i节点字段指向新库i节点，并返回0（成功）。与加载指向程序类似，实际库代码要到真正使用时
+	 * 才会读入内存中。另外，库文件代码被放置在进程空间的末端处，大小是4MB的整数倍
+	 */
 	iput(current->library);
 	current->library = NULL;
 	base = get_base(current->ldt[2]);
@@ -110,26 +120,36 @@ static unsigned long * create_tables(char * p, int argc, int envc)
 	unsigned long * sp;
 
 	/* 栈指针是以4字节为边界进行寻址的，故为0xfffffffc */
+	/*
+	 * 此时sp位于参数环境表的末端。然后我们先把sp向下（低地址方向）移动，在栈中留出环境变量指针占用的空间，
+	 * 并让环境变量指针envp指向该处。多留出的一个位置用于在最后存放一个NULL值。再把sp向下移动，留出命令行
+	 * 参数指针占用的空间，并让argv指针指向该处。同样，多留出的一个位置用于存放一个NULL值。此时sp指向参数
+	 * 指针块的起始处，我们将环境参数块指针envp和命令行参数块指针以及命令行参数个数分别压入栈中。注意，下面的
+	 * 指针加1操作，会使sp递增指针宽度值（4字节）
+	 */
 	sp = (unsigned long *) (0xfffffffc & (unsigned long) p);
 	/* 多留一个位置用于存放NULL */
-	sp -= envc + 1;
+	sp -= envc + 1;		/* 即sp=sp-(envc+1) */
 	envp = sp;
 	sp -= argc + 1;
 	argv = sp;
 	put_fs_long((unsigned long)envp, --sp);
 	put_fs_long((unsigned long)argv, --sp);
 	put_fs_long((unsigned long)argc, --sp);
+	/*
+	 * 再将命令行各参数指针和环境变量各指针分别放入前面预留出来的相应地方，最后分别放置一个NULL指针
+	 */
 	while (argc-- > 0) {
 		put_fs_long((unsigned long) p, argv++);
-		while (get_fs_byte(p++)) /* nothing */ ;
+		while (get_fs_byte(p++)) /* nothing */ ;	/* p指针指向下一个参数串 */
 	}
 	put_fs_long(0, argv);
 	while (envc-- > 0) {
 		put_fs_long((unsigned long) p, envp++);
-		while (get_fs_byte(p++)) /* nothing */ ;
+		while (get_fs_byte(p++)) /* nothing */ ;	/* p指针指向下一个参数串 */
 	}
 	put_fs_long(0, envp);
-	return sp;
+	return sp;		/* 返回构造的当前新栈指针 */
 }
 
 /*
@@ -211,25 +231,39 @@ static unsigned long copy_strings(int argc, char ** argv, unsigned long *page,
 	int len, offset = 0;
 	unsigned long old_fs, new_fs;
 
+	/*
+	 * 首先去当前段寄存器DS（指向内核数据段）和FS（用户数据段）值，分别保存到变量new_fs和old_fs中。
+	 * 若字符串及其数组（指针）来自内核空间，则设置FS段寄存器指向内核数据段
+	 */
 	if (!p) {
-		return 0;	/* bullet-proofing */
+		return 0;	/* bullet-proofing */	/* 偏移指针验证 */
 	}
 	new_fs = get_ds();
 	old_fs = get_fs();
-	if (from_kmem == 2) {
+	if (from_kmem == 2) {		/* 若串及其指针在内核空间则设置fs指向内核空间 */
 		set_fs(new_fs);
 	}
 	/* 从最后一个参数逆向开始复制 */
+	/*
+	 * 复制到指定偏移地址处。在循环中，首先取需要复制的当前字符串指针。如果字符串在用户空间而字符串数组（字符串指针）在
+	 * 内核空间，则先设置FS段寄存器指向内核数据段（DS），并在内核数据空间中取了字符串指针tmp之后就立刻恢复FS段寄存器
+	 * 原值（FS再指回用户空间），否则不用修改fs值而直接从用户空间取字符串指针到tmp
+	 */
 	while (argc-- > 0) {
-		if (from_kmem == 1) {
+		if (from_kmem == 1) {		/* 若串指针在内核空间，则fs指向内核空间 */
 			set_fs(new_fs);
 		}
 		if (!(tmp = (char *)get_fs_long(((unsigned long *)argv) + argc))) {
 			panic("argc is wrong");
 		}
-		if (from_kmem == 1) {
+		if (from_kmem == 1) {		/* 若串指针在内核空间，则fs指回用户空间 */
 			set_fs(old_fs);
 		}
+		/*
+		 * 然后从用户空间取该字符串，并计算该参数字符串长度len，此后tmp指向该字符串末端。如果该字符串长度超过此时参数和
+		 * 环境空间中还剩余的空闲长度，则空间不够了。于是恢复fs段寄存器值（如果被改变的话）并返回0。不过因为参数和环境空间
+		 * 留有128KB，所以通常不可能发生这种情况
+		 */
 		len = 0;		/* remember zero-padding */ /* 串是以NULL结尾的 */
 		do {
 			len++;
@@ -239,25 +273,39 @@ static unsigned long copy_strings(int argc, char ** argv, unsigned long *page,
 			set_fs(old_fs);
 			return 0;
 		}
+		/*
+		 * 接着我们逆向把字符串逐个字符地复制到参数和环境空间末端处。在循环复制字符串的字符过程中，我们首先要判断参数和环境
+		 * 空间中相应位置处是否已经有内存页面，如果还没有就先为其申请1页内存页面。偏移量offset被用作在一个页面中的当前指针
+		 * 偏移值。因为刚开始执行本函数时，偏移变量offset被初始化为0，所以（offset-1<0）肯定成立而使得offset重新被设置
+		 * 为当前p指针在页面范围内的偏移值
+		 */
 		/* 把参数对应的字符串中的逐个字符（从尾到头）地复制到参数和环境空间末端处 */
 		while (len) {
 			--p; --tmp; --len;
 			if (--offset < 0) {
 				offset = p % PAGE_SIZE;
-				if (from_kmem == 2) {
+				if (from_kmem == 2) {		/* 若串在内核空间则fs指回用户空间 */
 					set_fs(old_fs);
 				}
+				/*
+				 * 如果当前偏移值p所在的串空间页面指针数组项page[p/PAGE_SIZE]==0，表示此时p指针所处的空间内存页面还不存在，
+				 * 则需申请一空闲内存页，并将该页面指针填入指针数组，同时也使页面指针pag指向该新页面。若申请不到空闲页面则返回0
+				 */
 				if (!(pag = (char *) page[p/PAGE_SIZE]) &&
 				    !(pag = (char *) (page[p/PAGE_SIZE] = get_free_page()))) {
 					return 0;
 				}
-				if (from_kmem == 2) {
+				if (from_kmem == 2) {		/* 若串在内核空间则fs指回内核空间 */
 					set_fs(new_fs);
 				}
 			}
+			/* 然后从fs段中复制字符串的1字节到参数和环境空间内存页面pag的offset处 */
 			*(pag + offset) = get_fs_byte(tmp);
 		}
 	}
+	/*
+	 * 最后，如果字符串和字符串数组在内核空间，则恢复fs段寄存器原值，然后返回参数和环境空间中已复制参数的头部偏移值
+	 */
 	if (from_kmem == 2) {
 		set_fs(old_fs);
 	}
@@ -277,6 +325,12 @@ static unsigned long change_ldt(unsigned long text_size, unsigned long * page)
 	unsigned long code_limit, data_limit, code_base, data_base;
 	int i;
 
+	/*
+	 * 首先把代码和数据段长度均设置为64MB，然后取当前进程的LDT中代码段标识符中代码段基址。代码段基址与数据段基址相同。
+	 * 再使用这些新值重新设置LDT中代码段和数据段描述符中的基址和段限长。这里请注意，由于被加载的新程序的代码和数据段基址
+	 * 与原程序相同，因此没有必要再重复去设置他们，set_base(current->ldt[1], code_base); set_base(current->ldt[2], data_base);
+	 * 这两条设置段基址的语句多余，可省略
+	 */
 	code_limit = TASK_SIZE;
 	data_limit = TASK_SIZE;
 	code_base = get_base(current->ldt[1]);
@@ -285,18 +339,22 @@ static unsigned long change_ldt(unsigned long text_size, unsigned long * page)
 	set_limit(current->ldt[1], code_limit);
 	set_base(current->ldt[2], data_base);
 	set_limit(current->ldt[2], data_limit);
-/* make sure fs points to the NEW data segment */
+/* make sure fs points to the NEW data segment */ /* 要确信FS段寄存器已指向新的数据段 */
 	/* FS段寄存器中放入局部表数据段描述符的选择符(0x17) */
+	/*
+	 * 默认情况下FS都指向任务数据段，方法是从进程空间库代码位置开始处逆向一页一页地方。库代码长度为4MB的整数倍。
+	 * 函数put_dirty_page()用于把物理页面映射到进程逻辑空间中（mm/memory.c）
+	 */
 	__asm__("pushl $0x17\n\tpop %%fs"::);
 	/* 将参数和环境空间已存放数据的页面（最多有MAX_ARG_PAGES页）放到数据段末端 */
 	data_base += data_limit - LIBRARY_SIZE; /* 库文件代码占用进程空间末端部分 */
 	for (i = MAX_ARG_PAGES - 1; i >= 0; i--) {
 		data_base -= PAGE_SIZE;
-		if (page[i]) {
+		if (page[i]) {		/* 若该页面存在，就放置该页面 */
 			put_dirty_page(page[i], data_base);
 		}
 	}
-	return data_limit;
+	return data_limit;		/* 最后返回数据段限长（64MB） */
 }
 
 /*
@@ -307,10 +365,11 @@ static unsigned long change_ldt(unsigned long text_size, unsigned long * page)
  */
 /*
  * 'do_execve()'函数执行一个新程序.
+ * 注意：我们在数据区顶部保留4MB空闲空间给可加载库代码
  */
 
 /**
- * 加载并执行子进程(其他程序) 系统中断调用
+ * 加载并执行子进程(其他程序) 系统中断调用  execve()
  * 该函数是系统中断调用(int 0x80)功能号__NR_execve调用的函数。函数的参数是进入系统调用处理过程
  * 后直到调用本系统调用处理过程和调用本函数之前逐步压入栈中的值
  * @param[in]	eip			调用系统中断的程序代码指针
@@ -328,14 +387,23 @@ int do_execve(unsigned long * eip, long tmp, char * filename,
 	struct exec ex;
 	unsigned long page[MAX_ARG_PAGES]; /* 参数和环境串空间页面指针数组 */
 	int i, argc, envc;
-	int e_uid, e_gid;
+	int e_uid, e_gid;					/* 有效用户ID和有效组ID */
 	int retval;
-	int sh_bang = 0;
-	unsigned long p = PAGE_SIZE * MAX_ARG_PAGES - 4;
+	int sh_bang = 0;					/* 控制是否需要执行脚本程序 */
+	unsigned long p = PAGE_SIZE * MAX_ARG_PAGES - 4;	/* p指向参数和环境空间的最后部 */
 
+	/*
+	 * 在正式设置执行文件的运行环境之前，让我们先做些准备工作。内核准备了128KB（32个页面）空间来存放执行文件
+	 * 的命令行参数和环境字符串。上行把p初始设置成位于128KB空间的最后1个字长处。在初始参数和环境空间的操作过程
+	 * 中，p将用来指明在128KB空间中的当前位置。
+	 */
 	/* 参数eip[1]是调用本次系统调用的原用户程序代码段寄存器CS值，其中的段选择符当然必须是
 	当前任务的代码段选择符（0x000f）。 若不是该值，那么CS只能会是内核代码段的选择符0x0008。
 	但这是绝对不允许的，因为内核代码是常驻内存而不能被替换掉的。*/
+	/*
+	 * 因此下面根据eip[1]的值确认是否符合正常情况。然后再初始化128KB的参数和环境串空间，把所有字节清零，并取出
+	 * 执行文件的i节点。再根据甘薯参数分别计算出命令行参数和环境字符串的个数argc和envc。另外，执行文件必须是常规文件
+	 */
 	if ((0xffff & eip[1]) != 0x000f) {
 		panic("execve called from supervisor mode");
 	}
@@ -345,18 +413,35 @@ int do_execve(unsigned long * eip, long tmp, char * filename,
 	if (!(inode = namei(filename))) {		/* get executables inode */
 		return -ENOENT;
 	}
-	argc = count(argv);
-	envc = count(envp);
+	argc = count(argv);		/* 命令行参数个数 */
+	envc = count(envp);		/* 环境字符串变量个数 */
 	
 restart_interp:
 	if (!S_ISREG(inode->i_mode)) {	/* must be regular file */
 									/* 必须是常规文件 */
 		retval = -EACCES;
-		goto exec_error2;
+		goto exec_error2;	/* 若不是常规文件则置出错码，跳转 */
 	}
+	/*
+	 * 下面检查当前进程是否有权运行指定的执行文件。即根据执行文件i节点中的属性，看看本进程是否有权执行它。
+	 * 在把执行文件i节点的属性字段值取到i中后，我们首先查看属性中是否设置了“设置-用户-ID”（set-user-id）标志
+	 * 和“设置-组-ID”（set-group-id）标志。这两个标志主要用于让一般用户能够执行特权用户（如超级用户root）的程序，
+	 * 例如改变密码的程序passwd等。如果set-user-id标志置位，则后面执行进程的有效用户ID（euid）就设置成
+	 * 执行文件的用户ID，否则设置成当前进程的euid。如果执行文件set-group-id被置位的话，则执行进程的有效
+	 * 组ID（egid）就设置为执行文件的组ID，否则设置成当前进程的egid，这里暂时把这两个判断出来的值保存在变量
+	 * e_uid和e_gid中
+	 */
 	i = inode->i_mode;
 	e_uid = (i & S_ISUID) ? inode->i_uid : current->euid; /* 是否设置了执行时设置用户ID */
 	e_gid = (i & S_ISGID) ? inode->i_gid : current->egid; /* 是否设置了执行时设置组ID */
+	/*
+	 * 现在根据进程的euid和egid与执行文件的访问属性进行比较。如果执行文件属于运行进程的用户，则把文件属性值i右移6位
+	 * 此时其最低3位是文件宿主的访问权限标志。否则的话如果执行文件与当前进程的用户属于同组，则使属性值最低3位是执行文件
+	 * 组用户的访问权限标志。否则此时属性字最低3位就是其他用户访问该执行文件的权限。
+	 * 然后我们根据该最低3比特值来判断当前进程是否有权限运行这个执行文件。如果选出的相应用户没有运行该文件的权利（位0是执行权限），
+	 * 并且其他用户也没有任何权限或者当前进程用户不是超级用户，则表明当前进程没有权利运行这个执行文件。于是置不可执行出错码，并
+	 * 跳转到exec_error2处去作退出处理
+	 */
 	/* 根据执行文件i节点中的属性，看看本进程是否有权执行它 */
 	if (current->euid == inode->i_uid) {
 		i >>= 6;
@@ -371,6 +456,18 @@ restart_interp:
 		retval = -ENOEXEC;
 		goto exec_error2;
 	}
+	/*
+	 * 若程序能执行到这里，说明当前进程有运行指定执行文件的权限。因此从这里开始我们需要取出执行文件首部的数据，并根据
+	 * 其中的信息来分析设置运行环境，或者运行另一个shell程序来执行脚本程序。首先读取执行文件的第一块数据到高速缓冲块中
+	 * 并赋值缓冲块数据到ex结构中。如果执行文件开始的两个字节是字符"#!"，则说明执行文件是一个脚本文本文件。若要运行脚本
+	 * 文件，我们就需要执行脚本文件的解释程序（例如shell程序）。通常脚本文件的第一行文本均为"#!/bin/bash"，它指明了运行
+	 * 脚本文件需要的解释程序。运行方法是从脚本文件第一行（带字符'#!'）中取出其中的解释程序名及后面的参数（若有的话），
+	 * 然后将这些参数和脚本文件名放进执行文件（此时是解释程序）的命令行参数空间中。在这之前我们当然需要先把函数指定的原有
+	 * 命令行参数和环境字符串放到128KB空间中，而这里建立起来的命令行参数则放到它们前面位置处（因为是逆向放置）。最后让
+	 * 内核执行脚本文件的解释程序。下面就是在设置好解释程序的脚本文件名等参数后，取出解释程序的i节点并跳转到restart_interp
+	 * 去执行解释程序。由于我们需要跳转到指向过的代码restart_interp去，因此在确认并处理了脚本文件之后需要设置一个禁止再次
+	 * 执行下面的脚本处理代码标志sh_bang。在后面的代码中该标志也用来表示我们已经设置好执行文件的命令行参数，不要重复设置
+	 */
 	/* 读取第一块数据 */
 	if (!(bh = bread(inode->i_dev, inode->i_zone[0]))) {
 		retval = -EACCES;
@@ -384,22 +481,31 @@ restart_interp:
 		 * This section does the #! interpretation.
 		 * Sorta complicated, but hopefully it will work.  -TYT
 		 */
-
+		/* 这部分处理对'#!'的解释，有些复杂，但希望能工作。-TYT */
 		char buf[128], *cp, *interp, *i_name, *i_arg;
 		unsigned long old_fs;
 
+		/*
+		 * 从这里开始，我们从脚本文件中提取解释程序名及其参数，并把解释程序名、解释程序的参数和脚本文件名组合放入
+		 * 环境参数块中。首先复制脚本文件头1行字符'#!'后面的字符串到buf中，其中含有脚本解释程序名（例如/bin/sh），
+		 * 也可能含有解释程序的几个参数。然后对buf中的内容进行处理。删除开始的空格、制表符
+		 */
 		strncpy(buf, bh->b_data + 2, 127);
-		brelse(bh);
+		brelse(bh);			/* 释放缓冲块并放回脚本文件i节点 */
 		iput(inode);
 		buf[127] = '\0';
 		if ((cp = strchr(buf, '\n'))) {
-			*cp = '\0';
+			*cp = '\0';		/* 第1个换行符换成NULL并去掉空格制表符 */
 			for (cp = buf; (*cp == ' ') || (*cp == '\t'); cp ++);
 		}
-		if (!cp || *cp == '\0') {
+		if (!cp || *cp == '\0') {		/* 若该行没有其他内容，则出错 */
 			retval = -ENOEXEC; /* No interpreter name found */
-			goto exec_error1;
+			goto exec_error1;		/* 没有找到脚本解释程序名 */
 		}
+		/*
+		 * 此时我们得到了开头是脚本解释程序名的一行内容（字符串）。下面分享该行。首先取第一个字符串，它应该是解释
+		 * 程序名，此时i_name指向该名称。若解释程序名后还有字符，则它们应该是解释程序的参数串，于是令i_arg指向该串
+		 */
 		interp = i_name = cp;
 		i_arg = 0;
 		for ( ; *cp && (*cp != ' ') && (*cp != '\t'); cp++) {
@@ -408,12 +514,24 @@ restart_interp:
 			}
 		}
 		if (*cp) {
-			*cp++ = '\0';
-			i_arg = cp;
+			*cp++ = '\0';		/* 解释程序名尾添加NULL字符 */
+			i_arg = cp;			/* i_arg指向解释程序参数 */
 		}
 		/*
 		 * OK, we've parsed out the interpreter name and
 		 * (optional) argument.
+		 */
+		/* OK，我们已经解析出解释程序的文件名以及（可选的）参数 */
+		/*
+		 * 现在我们要把上面解析出来的解释程序名i_name及其参数i_arg和脚本文件名作为解释程序的参数放进环境和参数块中。
+		 * 不过首先我们需要把函数提供的原来一些参数和环境字符串先放进去，然后再放这里解析出来的。例如对于命令行是"example.sh
+		 * -arg1 -arg2"。若脚本文件的首行内容是"#! /bin/bash -iarg1 -iarg2"，那么在放入这里解释的首行参数之后，新的命令
+		 * 行类似于这样："bash -iarg1 -iarg2 example.sh -arg1 -arg2"。这里我们把sh_bang标志置上，然后把函数参数
+		 * 提供的原有参数和环境字符串放入到空间中。环境字符串个数是envc个，参数个数是argc-1个。少复制的一个原有参数是原执行文件名，
+		 * 即这里的脚本文件中，将在下面进行处理。【可以看出，实际上我们不需要另行处理脚本文件名，即这里完全可以复制argc个参数，包括
+		 * 原来执行文件名（即现在的脚本文件名），因为它位于同一个位置上】
+		 * 注意！这里指针p随着复制信息增加而逐渐向小地址方向移动，因此这两个复制串函数执行完后，环境参数串信息块位于程序命令行参数
+		 * 串信息块的上方，并且p指向程序的第1个参数串。另外，copy_strings()最后一个参数（0）指明参数字符串在用户空间
 		 */
 		if (sh_bang++ == 0) {
 			p = copy_strings(envc, envp, page, p, 0);
@@ -434,9 +552,14 @@ restart_interp:
 		*
 		* 这是以逆序进行处理的，是由于用户环境和参数的存放方式造成的。
 		*/
+		/*
+		 * 接着我们逆向复制脚本文件名、解释程序参数和解释程序文件名到参数和环境空间中。若出错，则置出错码，跳转到exec_error1。另外，
+		 * 由于本函数参数提供的脚步文件名filename在用户空间，但这里赋予copy_strings()的脚本文件名的指针在内核空间，因此这个复制
+		 * 字符串函数的最后一个参数（字符串来源标志）需要被置成1。若字符串在内核空间，则copy_strings()的最后一个参数要设置成2
+		 */
 		p = copy_strings(1, &filename, page, p, 1);
 		argc ++;
-		if (i_arg) {
+		if (i_arg) {		/* 复制解释程序的多个参数 */
 			p = copy_strings(1, &i_arg, page, p, 2);
 			argc++;
 		}
@@ -457,18 +580,31 @@ restart_interp:
 		/*
 		 * OK, now restart the process with the interpreter's inode.
 		 */
+		/* ok，现在使用解释程序的i节点重启进程 */
+		/*
+		 * 最后我们取得解释程序的i节点指针，然后跳转到restart_interp去执行解释程序。为了获得解释程序的i节点，我们需要使用namei()函数，但是
+		 * 该函数所使用的参数（文件名）是从用户数据空间得到的，即从段寄存器FS所指空间中取得。因此在调用namei()函数之前我们需要先临时让FS指向
+		 * 内核数据空间，以让函数能从内核空间得到解释程序名，并在namei()返回后恢复FS的默认设置。之后再跳转到restart_interp处重新处理新的执行
+		 * 文件-脚本文件的解释程序
+		 */
 		/* namei是从用户数据空间（fs指向）取参数的，而interp处于内核数据空间，故临时设置fs
 		 指向内核空间 */
 		old_fs = get_fs();
 		set_fs(get_ds());
 		if (!(inode = namei(interp))) { /* get executables inode */
-			set_fs(old_fs);
+			set_fs(old_fs);		/* 取得解释程序的i节点 */
 			retval = -ENOENT;
 			goto exec_error1;
 		}
 		set_fs(old_fs);
 		goto restart_interp;
 	}
+	/*
+	 * 此时缓冲块中的执行文件头结构数据已经复制到了ex中。于是先释放该缓冲块，并开始对ex中的执行头信息进行判断处理。对于这个内核来说，它仅支持ZMGIC执行
+	 * 文件格式，并且执行文件代码都从逻辑地址0开始执行，因此不支持含有代码或数据重定位信息的执行文件。当然，如果执行文件实在太大或者执行文件残缺不全，那么
+	 * 我们也不能运行它。因此对于下列情况将不执行程序：指向文件不是可执行文件（ZMAGIC）、或者代码和数据重定位部分长度等于0、或者（代码段+数据段+堆）长度
+	 * 超过50MB、或者执行文件长度小于（代码段+数据段+符号表长度+执行头部分）长度的总和
+	 */
 	brelse(bh);
 	/* 对这个内核来说，它仅支持ZMAGIC执行文件格式，不支持含有代码或数据重定位信息的执
 	行文件，执行文件实在太大或者执行文件残缺不全也不行 */
