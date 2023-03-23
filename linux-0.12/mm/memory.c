@@ -47,13 +47,13 @@
  * 91.12.20 - OK，把交换设备修改成可更改的了，就像根文件设备那样。
  */
 
-#include <signal.h>
+#include <signal.h>			/* 信号头文件。定义信号符号常量，信号结构以及信号操作函数原型 */
 
-#include <asm/system.h>
+#include <asm/system.h>		/* 系统头文件。定义了设置或修改描述符/中断门等的嵌入式汇编宏 */
 
-#include <linux/sched.h>
-#include <linux/head.h>
-#include <linux/kernel.h>
+#include <linux/sched.h>	/* 调度程序头文件。定义了任务结构task_struct、任务0的数据等 */
+#include <linux/head.h>		/* head头文件，定义了段描述符的简单结构，和几个选择符常量 */
+#include <linux/kernel.h>	/* 内核头文件。含有一些内核常用函数的原型定义 */
 
 /* 用于判断给定线性地址是否位于当前进程的代码段中，“(((addr)+4095)&~4095)”用于取得线性
  地址addr所在内存页面的末端地址 */
