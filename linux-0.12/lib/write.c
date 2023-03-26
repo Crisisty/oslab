@@ -5,7 +5,7 @@
  */
 
 #define __LIBRARY__
-#include <unistd.h>
+#include <unistd.h>     /* Linux标准头文件。定义了各种符号常数和类型，并声明了各种函数。若定义了__LIBRARY__，则含有系统调用号和内嵌汇编syscal0()等 */
 
 /** 
  * 写文件 系统调用
