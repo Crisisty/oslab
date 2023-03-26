@@ -4,7 +4,7 @@
  *  (C) 1991  Linus Torvalds
  */
 
-#include <ctype.h>
+#include <ctype.h>       /* 字节类型头文件。定义了一些有关字符类型判断和转换的宏 */
 
 char _ctmp;	        /* 一个临时字符变量，供ctype.h文件中转换字符宏函数使用。*/
 

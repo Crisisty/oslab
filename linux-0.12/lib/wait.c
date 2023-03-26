@@ -5,8 +5,8 @@
  */
 
 #define __LIBRARY__
-#include <unistd.h>
-#include <sys/wait.h>
+#include <unistd.h>     /* Linux标准头文件。定义了各种符号常数和类型，并声明了各种函数。若定义了__LIBRARY__，则含有系统调用号和内嵌汇编syscal0()等 */
+#include <sys/wait.h>	/* 等待调度头文件。定义系统调用wait()和waitpid()及相关常数符号 */
 
 /** 
  * 等待进程终止 系统调用
